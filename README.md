@@ -51,7 +51,7 @@ local Mandy = require(game:GetService("ReplicatedStorage"):WaitForChild("Mandy")
 
 ## Core Concepts
 
-### Controls
+### Packets
 Named communication channels with a defined shape, transmission type, and optional modifiers. Both server and client define the same control before use.
 
 ### Types
