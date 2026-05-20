@@ -52,33 +52,6 @@ local Mandy = require(game:GetService("ReplicatedStorage"):WaitForChild("Mandy")
 
 ---
 
-## file structure
-
-```
-Mandy.lua
-├── Types.lua         type system + TypeDef fluent chain
-├── Transport.lua     ByteNet integration + remote management  
-├── Registry.lua      global control registry
-├── Thenable.lua      user-facing async surface
-├── Promise.lua       internal async engine
-├── Signal.lua        internal signal primitive
-├── Signature.lua     per-server signature derivation + verification
-├── Security.lua      Secure / Cross / RateLimit / Flag
-├── Collective.lua    bidirectional streaming
-├── Mirror.lua        auto-replicating server state
-├── Sync.lua          bidirectional shared state
-├── Bridge.lua        cross-server MessagingService transport
-├── Token.lua         cancellation tokens
-├── Janitor.lua       batch cleanup
-├── Notice.lua        observability + packet inspector
-├── Plugin.lua        plugin system + lifecycle hooks
-├── Presence.lua      player connection tracking
-├── Contract.lua      enforced request/response contracts
-└── Shared.lua        internal utilities + constants
-```
-
----
-
 ## core concepts
 
 ```
