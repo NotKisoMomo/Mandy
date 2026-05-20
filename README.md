@@ -13,10 +13,9 @@
 [![stability](https://img.shields.io/badge/stability-alpha-6C3EF4?style=for-the-badge&labelColor=0d0d0d)](https://github.com/NotKisoMomo/Mandy)
 [![license](https://img.shields.io/badge/license-MIT-white?style=for-the-badge&labelColor=0d0d0d)](https://github.com/NotKisoMomo/Mandy/blob/main/LICENSE)
 [![roblox](https://img.shields.io/badge/roblox-luau-red?style=for-the-badge&labelColor=0d0d0d)](https://create.roblox.com)
-[![bytenet](https://img.shields.io/badge/transport-bytenet-6C3EF4?style=for-the-badge&labelColor=0d0d0d)](https://github.com/ffrostfall/ByteNet)
 [![plinko](https://img.shields.io/badge/by-plinko%20labs-6C3EF4?style=for-the-badge&labelColor=0d0d0d)](https://github.com/NotKisoMomo)
 
-*Buffer-serialized. Type-safe. Async-first. Built for Roblox.*
+*Type-safe. Buffer-serialized. Async-first. Built for Roblox.*
 
 </div>
 
@@ -38,7 +37,7 @@
 
 ## What is Mandy
 
-Mandy is a next-generation networking library for Roblox. ByteNet powers the transport layer -- everything travels as compact binary buffers. On top of that sits a fluent runtime type system, a middleware-style async Thenable chain, per-server signature security, bidirectional streaming via Collectives, auto-replicating Mirror state, cross-server Bridge messaging, and a plugin system with full lifecycle hooks.
+Mandy is a next-generation networking library for Roblox. It handles its own buffer serialization, type validation, async Thenable chain, per-server signature security, bidirectional streaming via Collectives, auto-replicating Mirror state, cross-server Bridge messaging, and a plugin system with full lifecycle hooks.
 
 Both sides define the same control. The rest is handled.
 
@@ -52,11 +51,29 @@ local Mandy = require(game:GetService("ReplicatedStorage"):WaitForChild("Mandy")
 
 ---
 
+## File Structure
+
+```
+Mandy.lua
+├── _Mandy
+│   ├── Types.lua       type system + custom types
+│   ├── Truck.lua       buffer serialization + remote management
+│   ├── Security.lua    Secure + Signature + Cross + RateLimit + Flag
+│   ├── Async.lua       Promise + Thenable + Token + Signal
+│   ├── Registry.lua    control registry + define + load
+│   ├── Janitor.lua     batch cleanup
+│   └── Shared.lua      constants + utilities
+└── _Libraries
+    └── Squash.lua      vendored buffer serialization
+```
+
+---
+
 ## Core Concepts
 
 ```
 control      named channel -- defined on both server and client before use
-TypeDef      fluent type object -- maps to a ByteNet primitive on the wire
+TypeDef      fluent type object -- compiles to a buffer type on the wire
              validation runs on top after deserialization
 kind         Unlazy / Lazy / Resolver -- determines the underlying remote
 subscriber   server: (Player, Package, Resolve, Drop)
@@ -143,7 +160,7 @@ Mandy.merge(structA, structB)
 
 ```lua
 local UserId = Mandy.defineType({
-    Mask     = Mandy.uint32,    -- ByteNet primitive on the wire
+    Mask     = Mandy.uint32,    -- buffer primitive on the wire
     Validate = function(value)
         return type(value) == "number" and value > 0
     end,
@@ -278,15 +295,11 @@ Combat.Post("Hit", player, { Damage = 25 })
 Combat.PostAll("Hit", { Damage = 25 })
 Combat.PostExclude("Hit", player, { Damage = 25 })
 
-Combat.Has("Hit")
-Combat.List()
-Combat.Stats("Hit")
-Combat.Pause("Hit")
-Combat.Resume("Hit")
-Combat.Mute("Hit")
-Combat.Unmute("Hit")
-Combat.Remove("Hit")
-Combat:Destroy()
+Combat.Has("Hit")        Combat.List()
+Combat.Stats("Hit")      Combat.Active("Hit")
+Combat.Pause("Hit")      Combat.Resume("Hit")
+Combat.Mute("Hit")       Combat.Unmute("Hit")
+Combat.Remove("Hit")     Combat:Destroy()
 ```
 
 ---
@@ -395,12 +408,8 @@ Mandy.Settle({ t1, t2 })        -- waits for all -- never rejects
 ### Sync Utilities
 
 ```lua
-Mandy.Resolve(value)
-Mandy.Reject(reason)
-Mandy.Try(fn)
-Mandy.Await(name)
-Mandy.AwaitSafe(name)
-Mandy.Expect(name)
+Mandy.Resolve(value)    Mandy.Reject(reason)    Mandy.Try(fn)
+Mandy.Await(name)       Mandy.AwaitSafe(name)   Mandy.Expect(name)
 ```
 
 ---
@@ -489,7 +498,7 @@ states:  Active -> Resolved  /  Dropped
 
 ## Mirror
 
-Server-owned state that auto-replicates to all clients. Mutations propagate automatically -- no manual `PostAll`. Supports `Delta = true` -- only changed fields replicate.
+Server-owned state that auto-replicates to all clients. Mutations propagate automatically. Supports `Delta = true` -- only changed fields replicate.
 
 ```lua
 local Health = Mandy.Mirror("PlayerHealth", {
@@ -631,7 +640,17 @@ Receive
 ### Rate Limiting
 
 ```lua
+-- Global -- set in Mandy.Secure
+
+-- Per-control override
 Mandy.RateLimit("PlayerHit", { MaxPerSecond = 5, MaxPerMinute = 30 })
+
+-- Per-define override
+Mandy.Define("PlayerHit", {
+    Type     = Mandy.Unlazy,
+    Security = { RateLimit = { MaxPerSecond = 5 }, Validate = true },
+    Parses   = { Damage = Mandy.uint8():bet(0, 100) },
+})
 ```
 
 ### Flags
@@ -696,7 +715,7 @@ local snapshot = Mandy.Snapshot()
 
 ## Plugin System
 
-Authored as a plain table -- consumed via `Mandy.Plugin()`. The `mandy` reference in `OnLoad` is a full Mandy handle -- plugins can define controls, subscribe, post, and add middleware.
+Authored as a plain table -- consumed via `Mandy.Plugin()`. The `mandy` reference in `OnLoad` is a full Mandy handle.
 
 ```lua
 -- MyPlugin.lua
@@ -734,13 +753,9 @@ plugin:Unload()
 
 ```lua
 -- Explicit
-Mandy.Remove("PlayerHit")
-Mandy.Destroy()
-
-p:Destroy()
-bin:Destroy()
-stream:Destroy()
-token:Destroy()
+Mandy.Remove("PlayerHit")      Mandy.Destroy()
+p:Destroy()                    bin:Destroy()
+stream:Destroy()               token:Destroy()
 plugin:Unload()
 sub:Disconnect() / sub.Disconnect() / sub()
 
@@ -764,23 +779,16 @@ jan:Cleanup()
 ```lua
 Mandy.Version
 Mandy.Dev(true)
-Mandy.Assert("PlayerHit", data)
-Mandy.Validate("PlayerHit", data)
+Mandy.Assert("PlayerHit", data)       Mandy.Validate("PlayerHit", data)
 Mandy.Simulate("PlayerHit", player, data)
 Mandy.Replay(snapshot)
-Mandy.Has("PlayerHit")
-Mandy.Get("PlayerHit")
-Mandy.List()
-Mandy.ListBin("Combat")
+Mandy.Has("PlayerHit")                Mandy.Get("PlayerHit")
+Mandy.List()                          Mandy.ListBin("Combat")
 Mandy.Active("PlayerHit")
-Mandy.Pause("PlayerHit")
-Mandy.Resume("PlayerHit")
-Mandy.Mute("PlayerHit")
-Mandy.Unmute("PlayerHit")
-Mandy.Stats("PlayerHit")
-Mandy.Stats()
-Mandy.Reset("PlayerHit")
-Mandy.ResetAll()
+Mandy.Pause("PlayerHit")              Mandy.Resume("PlayerHit")
+Mandy.Mute("PlayerHit")               Mandy.Unmute("PlayerHit")
+Mandy.Stats("PlayerHit")              Mandy.Stats()
+Mandy.Reset("PlayerHit")              Mandy.ResetAll()
 Mandy.Extend(fn)
 ```
 
