@@ -49,34 +49,6 @@ local Mandy = require(game:GetService("ReplicatedStorage"):WaitForChild("Mandy")
 
 ---
 
-## File Structure
-
-```
-Mandy.lua
-├── Types.lua
-├── Signal.lua
-├── Promise.lua
-├── Shared.lua
-├── Signature.lua
-├── Transport.lua
-├── Registry.lua
-├── Thenable.lua
-├── Collective.lua
-├── Mirror.lua
-├── Sync.lua
-├── Bridge.lua
-├── Token.lua
-├── Janitor.lua
-├── Notice.lua
-├── Plugin.lua
-├── Presence.lua
-└── Contract.lua
-```
-
-`Mandy.lua` is the top-level ModuleScript. All dependencies are direct children.
-
----
-
 ## Core Concepts
 
 ### Controls
