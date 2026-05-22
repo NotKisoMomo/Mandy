@@ -24,22 +24,41 @@
 ```
   reliable ---------------------> [Unlazy]   RemoteEvent
   unreliable -------------------> [Lazy]     UnreliableRemoteEvent
-  request-response -------------> [Resolver] -> Thenable chain
-                                                    |
-                                            :Next(pkg, resolve)
-                                            :Toss(err, resolve)
-                                            :Conclude(original)
-                                            :Retry(n)
-                                            :Collapse(reason?)
+  request-response -------------> [Resolver] -> Thread
+                                                  |
+                                          :Next(pkg, resolve)
+                                          :Toss(err, resolve)
+                                          :Conclude(original)
+                                          :Retry(n)
+                                          :Collapse(reason?)
 ```
 
 ---
 
 ## What is Mandy
 
-Mandy is a next-generation networking library for Roblox. It handles its own buffer serialization, type validation, async Thenable chain, per-server signature security, bidirectional streaming via Collectives, auto-replicating Mirror state, cross-server Bridge messaging, and a plugin system with full lifecycle hooks.
+Mandy is a next-generation networking library for Roblox. It owns its full stack -- buffer serialization, type validation, async Thread chains, per-server signature security, bidirectional streaming, auto-replicating state, cross-server messaging, and a plugin system with full lifecycle hooks.
 
-Both sides define the same control. The rest is handled.
+Both sides define the same mandate. The rest is handled.
+
+---
+
+## Terminology
+
+| Term | Meaning |
+|------|---------|
+| `Mandate` | a defined networking control -- what `Mandy.Mandate()` returns |
+| `Packet` | the raw definition config passed into `Define` or `Mandate` |
+| `Package` | the data sent over the wire |
+| `Parses` | the shape field inside a packet config |
+| `Subscription` | a listener connection returned by `Subscribe` |
+| `Term` | any callback |
+| `Patch` | an intersection -- `:also()` |
+| `Thread` | the Thenable async pipeline |
+| `Marks` | security flags on a player |
+| `Imprint` | a `Mandy.Snapshot()` dump |
+| `Session` | the bootstrapped security state after `Signed` fires |
+| `Recording` | a `Mandy.Record()` handle |
 
 ---
 
@@ -58,9 +77,9 @@ Mandy.lua
 ├── _Mandy
 │   ├── Types.lua       type system + custom types
 │   ├── Truck.lua       buffer serialization + remote management
-│   ├── Security.lua    Secure + Signature + Cross + RateLimit + Flag
-│   ├── Async.lua       Promise + Thenable + Token + Signal
-│   ├── Registry.lua    control registry + define + load
+│   ├── Security.lua    Secure + Signature + Cross + RateLimit + Marks
+│   ├── Async.lua       Promise + Thread + Token + Signal
+│   ├── Registry.lua    mandate registry + define + load
 │   ├── Janitor.lua     batch cleanup
 │   └── Shared.lua      constants + utilities
 └── _Libraries
@@ -69,118 +88,89 @@ Mandy.lua
 
 ---
 
-## Core Concepts
-
-```
-control      named channel -- defined on both server and client before use
-TypeDef      fluent type object -- compiles to a buffer type on the wire
-             validation runs on top after deserialization
-kind         Unlazy / Lazy / Resolver -- determines the underlying remote
-subscriber   server: (Player, Package, Resolve, Drop)
-             client: (Package, Resolve, Drop)
-             Resolve + Drop are only non-nil on Resolver kind
-```
-
----
-
 ## Type System
 
-Every type constructor returns a `TypeDef` -- a fluent object with chainable modifiers.
+Every constructor returns a `TypeDef` -- fluent, chainable, compiles to a buffer type on the wire.
 
 ```lua
-Mandy.uint8()                         -- base TypeDef
-Mandy.uint8():bet(0, 100)             -- constrained
-Mandy.string():nullable()             -- nilable
-Mandy.vec3():also(Mandy.any())        -- intersection  &
-Mandy.string():or(Mandy.uint8())      -- union         |
-Mandy.string():not(Mandy.uint8())     -- negation      ~
+Mandy.uint8():bet(0, 100)
+Mandy.string():nullable()
+Mandy.vec3():also(Mandy.any())     -- Patch -- intersection &
+Mandy.string():or(Mandy.uint8())   -- union |
+Mandy.string():not(Mandy.uint8())  -- negation ~
 ```
 
 ### Primitives
-
 ```lua
-Mandy.string()      Mandy.number()      Mandy.bool()
-Mandy.float32()     Mandy.float64()     Mandy.buff()
-Mandy.uint8()       Mandy.uint16()      Mandy.uint32()
-Mandy.int8()        Mandy.int16()       Mandy.int32()
-Mandy.any()         Mandy.never()       Mandy.unknown()
-Mandy.nil_()        Mandy.None          -- zero-payload -- use as Parses = Mandy.None
+Mandy.string()    Mandy.number()    Mandy.bool()      Mandy.buff()
+Mandy.float32()   Mandy.float64()   Mandy.uint8()     Mandy.uint16()
+Mandy.uint32()    Mandy.int8()      Mandy.int16()     Mandy.int32()
+Mandy.any()       Mandy.never()     Mandy.unknown()   Mandy.nil_()
+Mandy.None        -- zero-payload -- use as Parses = Mandy.None
 ```
 
 ### Roblox Types
-
 ```lua
-Mandy.vec2()          Mandy.vec3()           Mandy.vec2int16()
-Mandy.cframe()        Mandy.color3()         Mandy.udim()
-Mandy.udim2()         Mandy.rect()           Mandy.region3()
-Mandy.numberRange()   Mandy.numberSequence() Mandy.colorSequence()
-Mandy.tweenInfo()     Mandy.enumItem()
-Mandy.inst()          -- any Instance
-Mandy.inst("Part")    -- narrowed to classname
+Mandy.vec2()        Mandy.vec3()           Mandy.vec2int16()
+Mandy.cframe()      Mandy.color3()         Mandy.udim()
+Mandy.udim2()       Mandy.rect()           Mandy.region3()
+Mandy.numberRange() Mandy.numberSequence() Mandy.colorSequence()
+Mandy.tweenInfo()   Mandy.enumItem()
+Mandy.inst()        Mandy.inst("Part")
 ```
 
 ### Composites
-
 ```lua
 Mandy.struct({ Name = Mandy.string(), Health = Mandy.uint8() })
 Mandy.array(Mandy.string())
 Mandy.tuple(Mandy.string(), Mandy.uint8())
 Mandy.map(Mandy.string(), Mandy.float32())
 Mandy.record(Mandy.string())
-Mandy.lazy(function() return Mandy.struct({ ... }) end)   -- recursive types
-Mandy.shape({ ... })          -- exact -- no extra keys allowed
-Mandy.partial(existingStruct)
-Mandy.pick(existingStruct, { "Name" })
-Mandy.omit(existingStruct, { "Health" })
-Mandy.merge(structA, structB)
+Mandy.lazy(function() return Mandy.struct({ ... }) end)
+Mandy.shape({ ... })
+Mandy.partial(s)   Mandy.pick(s, { "Name" })
+Mandy.omit(s, { "Health" })   Mandy.merge(sA, sB)
 ```
 
 ### Modifiers
 
 | Modifier | Description |
 |----------|-------------|
-| `:or(typeDef)` | union \| |
-| `:also(typeDef)` | intersection & |
-| `:not(typeDef)` | negation |
-| `:nullable()` | value may be nil |
-| `:default(value)` | substitute if nil |
+| `:or(t)` | union \| |
+| `:also(t)` | Patch & |
+| `:not(t)` | negation |
+| `:nullable()` | may be nil |
+| `:default(v)` | substitute if nil |
 | `:where(fn)` | custom predicate |
-| `:literal(value)` | must equal exactly |
-| `:enum({ ... })` | must be one of |
+| `:literal(v)` | must equal exactly |
+| `:enum({ })` | must be one of |
 | `:min(n)` / `:max(n)` | numeric bounds |
-| `:bet(min, max)` | between -- shorthand |
-| `:step(n)` | must be multiple of n |
+| `:bet(min, max)` | between |
+| `:step(n)` | multiple of n |
 | `:minLength(n)` / `:maxLength(n)` | string length |
-| `:pattern(str)` | Lua pattern match |
+| `:pattern(str)` | Lua pattern |
 | `:minSize(n)` / `:maxSize(n)` | collection size |
 | `:tag(str)` | nominal brand |
-| `:describe(str)` | human-readable error label |
+| `:describe(str)` | error label |
 
 ### Custom Types
-
 ```lua
 local UserId = Mandy.defineType({
-    Mask     = Mandy.uint32,    -- buffer primitive on the wire
+    Mask     = Mandy.uint32,
     Validate = function(value)
         return type(value) == "number" and value > 0
     end,
 })
 
--- first-class TypeDef -- all modifiers work
-Mandy.Define("PlayerJoin", {
-    Type   = Mandy.Unlazy,
-    Parses = {
-        Id   = UserId():bet(1, 999999),
-        Name = Mandy.string():minLength(3):maxLength(20),
-    },
-})
+UserId():bet(1, 999999)    -- all modifiers work
 ```
 
 ---
 
-## Defining Controls
+## Defining Mandates
 
 ```lua
+-- Global -- no handle
 Mandy.Define("PlayerHit", {
     Type      = Mandy.Unlazy,
     Modifiers = { Mandy.Linger, Mandy.Distinct },
@@ -192,70 +182,55 @@ Mandy.Define("PlayerHit", {
     },
 })
 
--- Resolver -- adds Timeout + Retries
-Mandy.Define("GetStats", {
+-- Mandate -- define + return handle
+local Damage = Mandy.Mandate("Damage", {
     Type    = Mandy.Resolver,
     Timeout = 5,
     Retries = 2,
-    Parses  = { UserId = Mandy.uint32() },
+    Parses  = { Amount = Mandy.uint8():bet(0, 100), Origin = Mandy.vec3() },
 })
+
+-- Handle from existing mandate
+local Damage = Mandy.CreateHandle("Damage")
 
 -- Zero-payload
-Mandy.Define("Ping", {
-    Type   = Mandy.Unlazy,
-    Parses = Mandy.None,
-})
+Mandy.Define("Ping", { Type = Mandy.Unlazy, Parses = Mandy.None })
 
--- Bulk define
+-- Bulk
 Mandy.Load({
     { Name = "Chat", Config = { Type = Mandy.Unlazy, Parses = { Text = Mandy.string() } } },
     { Name = "Move", Config = { Type = Mandy.Lazy,   Parses = { Pos  = Mandy.vec3()   } } },
 })
 ```
 
-### Packet Modifiers
+### Mandate Modifiers
 
 | Modifier | Behavior |
 |----------|----------|
-| `Mandy.Linger` | Caches last emission -- new subscribers receive it immediately |
-| `Mandy.Distinct` | Only fires if value changed from last emission |
-| `Mandy.Debounce(n)` | Coalesces rapid posts into one after n seconds |
+| `Mandy.Linger` | Caches last package -- new subscriptions receive it immediately |
+| `Mandy.Distinct` | Only fires if package changed |
+| `Mandy.Debounce(n)` | Coalesces rapid posts into one |
 | `Mandy.Throttle(n)` | Max one emission per n seconds |
-| `Mandy.Buffer(n)` | Accumulates n emissions then fires as array |
+| `Mandy.Buffer(n)` | Accumulates n packages then fires as array |
 
 ---
 
-## Packet Handle
-
-`Mandy.Packet` is identical to `Mandy.Define` but returns a handle -- colocates definition and usage.
+## Mandate Handle
 
 ```lua
-local Damage = Mandy.Packet("Damage", {
-    Type   = Mandy.Resolver,
-    Parses = {
-        Amount = Mandy.uint8():bet(0, 100),
-        Origin = Mandy.vec3(),
-    },
-})
+local Damage = Mandy.Mandate("Damage", { ... })
 
 -- Server
-Damage.Subscribe(function(player, package, resolve, drop)
-    resolve({ Ok = true, Applied = package.Amount })
-end)
-
-Damage.PostAll({ Amount = 25, Origin = hit })
-Damage.PostExclude(player, { Amount = 25, Origin = hit })
+Damage.Subscribe(function(player, package, resolve, drop) end)
+Damage.PostAll({ Amount = 25 })
+Damage.PostExclude(player, { Amount = 25 })
 
 -- Client
-Damage.Post({ Amount = 25, Origin = hit })
-    :Next(function(package, resolve)
-        resolve(package.Applied)
-    end)
-    :Conclude(function(original)
-        print("original:", original.Amount)
-    end)
+Damage.Post({ Amount = 25 })
+    :Next(function(package, resolve) resolve(package.Applied) end)
+    :Conclude(function(original) end)
 
-Damage.Validate({ Amount = 25, Origin = Vector3.new() })
+Damage.Validate({ Amount = 25 })
 Damage:Destroy()
 ```
 
@@ -263,43 +238,26 @@ Damage:Destroy()
 
 ## Bin
 
-A live named registry. Accepts an initial `Packets` table and a `Security` config that cascades to all controls. Controls can be added or removed at any time after creation.
-
 ```lua
 local Combat = Mandy.Bin("Combat", {
     Security = { RateLimit = { MaxPerSecond = 10 } },
-    Packets  = {
-        Hit = {
-            Type   = Mandy.Unlazy,
-            Parses = { Damage = Mandy.uint8() },
-        },
-        Projectile = {
-            Type   = Mandy.Lazy,
-            Parses = { Origin = Mandy.vec3(), Direction = Mandy.vec3() },
-        },
+    Mandates = {
+        Hit        = { Type = Mandy.Unlazy, Parses = { Damage = Mandy.uint8() } },
+        Projectile = { Type = Mandy.Lazy,   Parses = { Origin = Mandy.vec3() } },
     },
 })
 
--- Add after creation
-Combat.Define("GetStats", {
-    Type    = Mandy.Resolver,
-    Timeout = 5,
-    Parses  = { UserId = Mandy.uint32() },
-})
+Combat.Define("GetStats", { Type = Mandy.Resolver, Timeout = 5, Parses = { UserId = Mandy.uint32() } })
+local Hit = Combat.CreateHandle("Hit")
 
-Combat.Subscribe("Hit", function(player, package, resolve, drop)
-    applyDamage(player, package.Damage)
-end)
-
+Combat.Subscribe("Hit", function(player, package, resolve, drop) end)
 Combat.Post("Hit", player, { Damage = 25 })
 Combat.PostAll("Hit", { Damage = 25 })
 Combat.PostExclude("Hit", player, { Damage = 25 })
 
-Combat.Has("Hit")        Combat.List()
-Combat.Stats("Hit")      Combat.Active("Hit")
-Combat.Pause("Hit")      Combat.Resume("Hit")
-Combat.Mute("Hit")       Combat.Unmute("Hit")
-Combat.Remove("Hit")     Combat:Destroy()
+Combat.Has("Hit")     Combat.List()       Combat.Stats("Hit")
+Combat.Pause("Hit")   Combat.Resume("Hit") Combat.Mute("Hit")
+Combat.Unmute("Hit")  Combat.Remove("Hit") Combat:Destroy()
 ```
 
 ---
@@ -307,34 +265,22 @@ Combat.Remove("Hit")     Combat:Destroy()
 ## Subscribing
 
 ```lua
--- Persistent
 local sub = Mandy.Subscribe("PlayerHit", function(player, package, resolve, drop)
     applyDamage(player, package.Damage)
 end)
 
--- One-shot -- auto-disconnects after first fire
-Mandy.Once("PlayerHit", function(player, package, resolve, drop)
-    print("first hit:", package.Damage)
-end)
+Mandy.Once("PlayerHit", function(player, package, resolve, drop) end)
 
--- Yields thread
-local data = Mandy.Await("PlayerHit")
-
--- Safe -- never throws
+local data    = Mandy.Await("PlayerHit")
 local ok, data, err = Mandy.AwaitSafe("PlayerHit")
 ```
 
 ### Subscription Object
-
 ```lua
-sub:Disconnect()    -- method
-sub.Disconnect()    -- dot
-sub()               -- call -- all three disconnect
+sub:Disconnect()  sub.Disconnect()  sub()
+sub.Data
 
-sub.Data            -- populated after first emission
-
--- Thenable surface -- resolves on next emission
-sub:Next(function(package, resolve) resolve(package.Damage) end)
+sub:Next(function(package, resolve) end)
 sub:Toss(function(err, resolve) end)
 sub:Conclude(function(original) end)
 sub:Retry(n)
@@ -348,75 +294,47 @@ sub:Collapse(reason?)
 ```lua
 -- Server
 Mandy.Post("PlayerHit", player, { Origin = Vector3.new(), Damage = 25 })
-Mandy.PostAll("PlayerHit", { Origin = Vector3.new(), Damage = 25 })
-Mandy.PostExclude("PlayerHit", player, { Origin = Vector3.new(), Damage = 25 })
+Mandy.PostAll("PlayerHit", { Damage = 25 })
+Mandy.PostExclude("PlayerHit", player, { Damage = 25 })
 
 -- Client
-Mandy.Post("PlayerHit", { Origin = root.Position, Damage = 25 })
+Mandy.Post("PlayerHit", { Damage = 25 })
 
--- Batch -- flushes as one transport payload
+-- Batch
 Mandy.Batch(function()
     Mandy.Post("PlayerHit",    player, { Damage = 25 })
     Mandy.Post("StatusEffect", player, { Tag = "Burn" })
-    Mandy.Post("PlayerHit",    player, { Damage = 10 })
 end)
 ```
 
 ---
 
-## Async -- Thenable
-
-`Mandy.Post` on a `Resolver` control returns a `Thenable`. The chain is middleware-style -- each `:Next` must call `resolve` to continue downstream.
+## Async -- Thread
 
 ```lua
 Mandy.Post("GetStats", { UserId = 123 })
-    :Next(function(package, resolve)
-        resolve(package.Level)
-    end)
-    :Next(function(level, resolve)
-        resolve(level + 10)
-    end)
-    :Toss(function(err, resolve)
-        resolve(0)
-    end)
-    :Conclude(function(original)
-        print("original level:", original.Level)
-    end)
+    :Next(function(package, resolve) resolve(package.Level) end)
+    :Toss(function(err, resolve) resolve(0) end)
+    :Conclude(function(original) print(original.Level) end)
     :Retry(2)
     :Collapse(reason?)
 ```
 
-```
-:Next(fn)          on resolve -- fn(package, resolve) -- must call resolve to continue
-:Toss(fn)          on reject  -- fn(err, resolve)     -- call resolve to recover
-:Conclude(fn)      always fires after Next -- receives original unmodified package
-:Retry(n)          retry up to n times on reject before Toss fires
-:Collapse(reason?) cancel thread + auto-resolve
-```
-
 ### Combinators
-
 ```lua
-Mandy.All({ t1, t2, t3 })       -- resolves when all resolve
-Mandy.Race({ t1, t2, t3 })      -- first to resolve or reject wins
-Mandy.Any({ t1, t2, t3 })       -- first to resolve wins
-Mandy.Batch({ t1, t2 }, n)      -- resolves n at a time
-Mandy.Waterfall({ fn1, fn2 })   -- sequential -- output feeds next
-Mandy.Settle({ t1, t2 })        -- waits for all -- never rejects
+Mandy.All({ t1, t2 })     Mandy.Race({ t1, t2 })    Mandy.Any({ t1, t2 })
+Mandy.Batch({ t1 }, n)    Mandy.Waterfall({ fn1 })  Mandy.Settle({ t1, t2 })
 ```
 
 ### Sync Utilities
-
 ```lua
-Mandy.Resolve(value)    Mandy.Reject(reason)    Mandy.Try(fn)
-Mandy.Await(name)       Mandy.AwaitSafe(name)   Mandy.Expect(name)
+Mandy.Resolve(value)  Mandy.Reject(reason)  Mandy.Try(fn)
+Mandy.Await(name)     Mandy.AwaitSafe(name) Mandy.Expect(name)
 ```
 
 ---
 
-## Token -- Cancellation
-
-`Mandy.Token()` is itself Thenable -- its chain fires on cancel. Both caller and returner participate.
+## Token
 
 ```lua
 local Token = Mandy.Token()
@@ -425,26 +343,13 @@ Token:Next(function(package, resolve)
     warn("cancelled:", package.Reason)
     resolve(package.Reason)
 end)
-:Conclude(function(original)
-    print("token done:", original.Reason)
-end)
 
-Token:Next()    -- reactive ping -- no callback -- fires chain
+Token:Next()              -- reactive ping
+Token:Cancel(reason?)
+Token.Cancelled           -- boolean
+Token.Reason              -- string?
 
 Mandy.Post("GetStats", { UserId = 123 }, { Token = Token })
-    :Next(function(package, resolve)
-        resolve(package.Level)
-    end)
-
-Token:Cancel(reason?)
-Token.Cancelled    -- boolean
-Token.Reason       -- string?
-
--- Returner side
-Mandy.Subscribe("GetStats", function(player, package, resolve, drop)
-    drop("invalid request")
-end)
-
 Token:Destroy()
 ```
 
@@ -452,287 +357,371 @@ Token:Destroy()
 
 ## Collective -- Streaming
 
-Typed bidirectional streaming. Pass a table to send -- pass a function to listen. Each chunk validated against `Parses`. Stream can be resolved (completed) or dropped (terminated).
-
 ```lua
 local Stream = Mandy.Collective("MapData", {
     Type    = Mandy.Unlazy,
     Timeout = 10,
-    Parses  = {
-        Chunk = Mandy.array(Mandy.uint8()),
-        Index = Mandy.uint16(),
-    },
+    Parses  = { Chunk = Mandy.array(Mandy.uint8()), Index = Mandy.uint16() },
 })
 
--- Send
 Stream:Next({ Chunk = data, Index = 1 })
-Stream:Next({ Chunk = data, Index = 2 })
 
--- Listen -- server
+-- Server
 Stream:Next(function(player, package, resolve, drop)
-    if package.Index == finalIndex then
-        resolve({ Ok = true })
-        return
-    end
-    drop("malformed chunk")
+    if done then resolve({ Ok = true }) else drop("bad chunk") end
 end)
 
--- Listen -- client
-Stream:Next(function(package, resolve, drop)
-    resolve(compiledResult)
-end)
-:Conclude(function(original)
-    print("stream concluded")
-end)
+-- Client
+Stream:Next(function(package, resolve, drop) resolve(result) end)
 
+Stream:Pause()   Stream:Resume()
 Stream:Drop("reason")
 Stream:Destroy()
 ```
 
 ```
 states:  Active -> Resolved  /  Dropped
-         once Resolved or Dropped -- no further chunks fire
 ```
 
 ---
 
 ## Mirror
-
-Server-owned state that auto-replicates to all clients. Mutations propagate automatically. Supports `Delta = true` -- only changed fields replicate.
-
 ```lua
 local Health = Mandy.Mirror("PlayerHealth", {
     Delta  = true,
     Parses = { Value = Mandy.uint8():bet(0, 100) },
 })
 
--- Server
-Health.Set(player, { Value = 75 })
+Health.Set(player, { Value = 75 })  -- server
 Health.Get(player)
-
--- Client -- read only + reactive
-Health.Subscribe(function(package, resolve, drop)
-    updateHealthBar(package.Value)
-end)
-
+Health.Subscribe(function(package, resolve, drop) end)  -- client
 Health.Get()
 ```
 
----
-
 ## Sync
-
-Bidirectional shared state. Server is authoritative -- client proposes, server accepts or rejects via `Resolve`.
-
 ```lua
 local Inventory = Mandy.Sync("Inventory", {
     Parses  = { Items = Mandy.array(Mandy.string()) },
-    Resolve = function(player, current, proposed)
-        return proposed    -- return current to reject
-    end,
+    Resolve = function(player, current, proposed) return proposed end,
 })
 ```
-
----
 
 ## Bridge
-
-Cross-server messaging via `MessagingService` -- fully typed and validated like any other Mandy control.
-
 ```lua
 local ServerMsg = Mandy.Bridge("ServerChat", {
-    Parses = {
-        ServerId = Mandy.string(),
-        Message  = Mandy.string(),
-    },
+    Parses = { ServerId = Mandy.string(), Message = Mandy.string() },
 })
-
-ServerMsg.Post({ ServerId = game.JobId, Message = "hello from this server" })
-
-ServerMsg.Subscribe(function(package, resolve, drop)
-    print(package.ServerId, package.Message)
-end)
-```
-
----
-
-## Contract
-
-Enforces that a request is always followed by a response within a time window.
-
-```lua
-Mandy.Contract({
-    Request  = "GetStats",
-    Response = "StatsResult",
-    Within   = 5,
-    OnBreach = function(player)
-        Mandy.Flag(player, "contract breached")
-    end,
-})
-```
-
----
-
-## Presence
-
-Built-in player connection tracking.
-
-```lua
-Mandy.Presence({
-    OnJoin      = function(player) end,
-    OnLeave     = function(player, reason) end,
-    OnReconnect = function(player) end,
-})
+ServerMsg.Post({ ServerId = game.JobId, Message = "hello" })
+ServerMsg.Subscribe(function(package, resolve, drop) end)
 ```
 
 ---
 
 ## Security
 
-Opt-in. Call `Mandy.Secure()` to activate. A per-server signature is derived on boot, sent to each client via a bootstrap remote, and verified on every subsequent packet. Packets sent before bootstrap completes are queued and flushed in order after `Mandy.Signed` fires.
-
 ### Signature Derivation
-
 ```
-EPOCH  = os.time({ year=1970, month=1, day=1, hour=0, min=0, sec=0 })
-delta  = os.time() - EPOCH
-seed   = 42 ^ (os.clock() / delta)
-rng    = Random.new(seed)
-
-Raw    = 64x rng:NextInteger(1, 126)
-Pass1  = Dott.encode(Raw)
-Pass2  = Dott.encode(Pass1)
-        clamp each char Dott code (01-70) -> a-z range (01-26)
-Sig    = translated:sub(1, 32)
+EPOCH = os.time({ year=1970, month=1, day=1, hour=0, min=0, sec=0 })
+seed  = 42 ^ (os.clock() / (os.time() - EPOCH))
+rng   = Random.new(seed)
+Raw   = 64x rng:NextInteger(1, 126)
+Pass1 = Dott.encode(Raw)
+Pass2 = Dott.encode(Pass1)
+        clamp Dott codes (01-70) -> a-z (01-26)
+Sig   = translated:sub(1, 32)
 ```
 
 ### Setup
-
 ```lua
 Mandy.Secure({
     RateLimit = { MaxPerSecond = 20, MaxPerMinute = 200 },
     Nonce     = true,
     Sequence  = true,
-    OnFlag    = function(player, reason)
-        warn(player.Name .. " -- " .. reason)
-    end,
+    OnFlag    = function(player, reason) end,
 })
 
-Mandy.Signed(function()
-    print("bootstrap complete -- safe to post")
-end)
+Mandy.Signed(function() end)
 ```
 
 ### Verification Flow
-
 ```
 Receive
-  - Signature     mismatch       -> flag + drop
-  - Nonce         seen before    -> flag + drop
-  - Sequence      seq <= last    -> flag + drop
-  - Timestamp     outside +-5s  -> flag + drop
-  - RateLimit     exceeded       -> flag + drop
-  - Cross chain   Drop() called  -> drop
-  - Validation    shape fail     -> flag + drop
-  - Subscriber    ok
+  - Signature   mismatch     -> marks + drop
+  - Nonce       seen before  -> marks + drop
+  - Sequence    seq <= last  -> marks + drop
+  - Timestamp   outside +-5s -> marks + drop
+  - RateLimit   exceeded     -> marks + drop
+  - Cross       Drop()       -> drop
+  - Validation  shape fail   -> marks + drop
+  - Subscriber  ok
 ```
 
-### Rate Limiting
-
+### Marks
 ```lua
--- Global -- set in Mandy.Secure
-
--- Per-control override
-Mandy.RateLimit("PlayerHit", { MaxPerSecond = 5, MaxPerMinute = 30 })
-
--- Per-define override
-Mandy.Define("PlayerHit", {
-    Type     = Mandy.Unlazy,
-    Security = { RateLimit = { MaxPerSecond = 5 }, Validate = true },
-    Parses   = { Damage = Mandy.uint8():bet(0, 100) },
-})
-```
-
-### Flags
-
-```lua
-Mandy.Flag(player, "attempted exploit")
-
-local flags = Mandy.Flags(player)
-for _, flag in flags do
-    print(flag.Reason, flag.At)
-end
-
+Mandy.Flag(player, "reason")
 Mandy.Unflag(player)
+local marks = Mandy.Flags(player)
+for _, mark in marks do print(mark.Reason, mark.At) end
 ```
 
-### Per-player
-
+### Advanced Security
 ```lua
-Mandy.Mute("PlayerHit", player)
-Mandy.Disconnect(player)
-Mandy.Flush(player)
-Mandy.StatsFor(player)
+Mandy.Honeypot("FakePing")          -- any post auto-marks player
+Mandy.Drift({ OnDetect = fn })      -- clock manipulation detection
+Mandy.Fingerprint({ OnFlag = fn })  -- behavioral anomaly detection
+Mandy.Shadow(player, fn)            -- duplicate packets to observer
+Mandy.Lockdown(player)              -- freeze packet processing
+Mandy.Seal("PlayerHit")             -- lock mandate -- no further modifications
+Mandy.Surge(player, 5)              -- lift rate limits for n seconds
 ```
 
 ---
 
 ## Cross -- Middleware
-
-Global middleware. Stacks in registration order. Each handler must call `next()` or `packet.Drop()`.
-
 ```lua
 Mandy.Cross(function(packet, next)
-    if packet.Name == "PlayerHit" and packet.Package.Damage > 100 then
-        packet.Drop()
-        return
-    end
+    if packet.Package.Damage > 100 then packet.Drop() return end
     next()
 end)
 ```
-
 `packet` fields: `Name` `Package` `Player` `Direction` `At`
 
 ---
 
-## Notice -- Observability
+## Advanced Features
 
+### Routing + Architecture
 ```lua
-Mandy.Notice({
-    Enabled  = true,
-    OnPacket = function(event)
-        print(event.Direction, event.Name, event.Size, event.At)
-    end,
-    OnDrop   = function(event) warn("dropped:", event.Name) end,
-    OnFlag   = function(event) warn("flagged:", event.Player.Name, event.Reason) end,
-    OnError  = function(event) warn("error:",   event.Reason) end,
+-- Synchronized multi-player post with shared timestamp
+Mandy.Chorus({ player1, player2 }, "RoundStart", { At = tick() })
+
+-- Conditional routing -- drop + Term if false
+Mandy.When("PlayerHit", function(player, package)
+    return player.Team ~= package.Target.Team
+end, function(player, package) end)
+
+-- Spatial routing -- only players within radius receive
+Mandy.Region("ZoneEffect", workspace.Zone1, { Radius = 50 })
+
+-- Team routing
+Mandy.Team("TeamAlert", redTeam, { Message = "Base under attack" })
+
+-- Named alias -- both route to same mandate
+Mandy.Alias("PlayerHit", "DamagePlayer")
+
+-- Chained mandate pipeline
+Mandy.Pipeline("CombatFlow", { "PlayerHit", "ApplyDamage", "BroadcastDeath" })
+
+-- Time-limited post access
+Mandy.Lease(player, "PurchaseItem", { Expires = 10 })
+
+-- Single-use server-issued ticket
+Mandy.Marker.Issue(player, "PurchaseItem", { Expires = 10 })
+
+-- Transfer Collective ownership mid-stream
+Mandy.Handoff(stream, newPlayer)
+
+-- Wait for packets from multiple players before firing
+Mandy.Converge({ "player1Ready", "player2Ready" }, function(packages) end)
+
+-- Server-internal routing -- no network
+Mandy.Dispatch("InternalEvent", data)
+
+-- Phase-gated mandate groups
+Mandy.Phase("Combat", { "PlayerHit", "Damage", "StatusEffect" })
+Mandy.Enter("Combat")
+Mandy.Exit("Combat")
+
+-- Tie mandate lifecycle to Instance
+Mandy.Bind("ZoneChat", workspace.Zone1)
+```
+
+### State
+```lua
+-- Simple scalar server-owned value
+local Timer = Mandy.Anchor("RoundTimer", { Value = Mandy.float32() })
+Timer.Set(60)    Timer.Get()
+
+-- Multi-server state agreement
+Mandy.Consensus("GlobalEconomy", {
+    Parses  = { Gold = Mandy.uint32() },
+    Quorum  = 3,
 })
 
-local snapshot = Mandy.Snapshot()
+-- Imprint diff
+local delta = Mandy.Diff("PlayerState", oldPackage, newPackage)
+-- { Health = { From = 100, To = 75 } }
+
+-- Rollback player state to previous imprint
+Mandy.Rollback(player, imprint)
+
+-- Logical clock per mandate
+Mandy.Epoch("PlayerHit")
+```
+
+### Cross-Server
+```lua
+-- Server cluster grouping
+Mandy.Cluster("GameServers", { Role = "Game" })
+
+-- Player packet queue survives teleport
+Mandy.Migrate(player, targetJobId)
+
+-- Server discovery
+Mandy.Postit({ Role = "Lobby", Capacity = 50 })
+local lobby = Mandy.Find({ Role = "Lobby" })
+```
+
+### Performance
+```lua
+-- Per-frame bandwidth budget with priority tiers
+Mandy.Budget({ Critical = 4096, High = 2048, Normal = 1024, Low = 512 })
+
+-- Per-mandate send priority
+Mandy.Priority("PlayerHit", "Critical")
+
+-- Pre-allocate buffer pools
+Mandy.Pool("PlayerPosition", { Size = 128 })
+
+-- Auto-merge posts in same frame
+Mandy.Coalesce("PlayerPosition", true)
+
+-- LZ compression for large payloads
+Mandy.Compress("MapData", true)
+```
+
+### Schema + Validation
+```lua
+-- Structural diff between two packages
+local delta = Mandy.Diff("PlayerState", pkgA, pkgB)
+
+-- Validate inline shape -- no registered mandate needed
+local ok, err = Mandy.Pass({ Origin = Mandy.vec3() }, { Origin = Vector3.new() })
+
+-- Validate against registered mandate
+local ok, err = Mandy.Validate("PlayerHit", package)
+
+-- Infer TypeDef from raw value
+local t = Mandy.Infer({ Origin = Vector3.new(), Damage = 25 })
+
+-- Versioned schema migration
+Mandy.Evolve("PlayerHit", {
+    [1] = { Damage = Mandy.uint8() },
+    [2] = { Damage = Mandy.uint8(), Origin = Mandy.vec3() },
+    Migrate = {
+        [1] = function(pkg) return { Damage = pkg.Damage, Origin = Vector3.zero } end,
+    },
+})
+
+-- Coerce package to match Parses instead of rejecting
+Mandy.Define("PlayerHit", {
+    Type    = Mandy.Unlazy,
+    Conform = true,
+    Parses  = { Damage = Mandy.uint8():bet(0, 100):default(0) },
+})
+
+-- Runtime type narrowing
+local value = Mandy.Narrow(package.Status, Mandy.string())
+
+-- Export mandate type definition
+local schema = Mandy.Schema("PlayerHit")
+
+-- Explain mandate in human-readable form
+Mandy.Explain("PlayerHit")
+```
+
+### Observability
+```lua
+-- Round-trip latency per mandate
+Mandy.Echo("PlayerHit")    -- returns ms
+Mandy.Echo()               -- global average
+
+-- Predictive rate analysis
+Mandy.Forecast("PlayerHit", function(player, projection)
+    print(projection.SecondsUntilLimit, projection.CurrentRate)
+end)
+
+-- Active health check
+Mandy.Probe("PlayerHit", { Interval = 5 })
+
+-- Per-mandate packet frequency heatmap
+local heatmap = Mandy.Heatmap()
+
+-- Ordered event timeline
+local timeline = Mandy.Timeline({ Control = "PlayerHit", Player = player })
+
+-- Immutable security audit log
+Mandy.Audit({ Persist = true, DataStore = "MandyAudit" })
+
+-- Threshold alerts
+Mandy.Alert({
+    Metric    = "DropRate",
+    Mandate   = "PlayerHit",
+    Threshold = 0.1,
+    Term      = function(data) end,
+})
+
+-- Notice hooks
+Mandy.Notice({
+    Enabled  = true,
+    OnPacket = function(event) print(event.Direction, event.Name, event.Size) end,
+    OnDrop   = function(event) end,
+    OnFlag   = function(event) end,
+    OnError  = function(event) end,
+})
+
+local imprint = Mandy.Snapshot()
+```
+
+### Recording + Replay
+```lua
+local rec = Mandy.Record(player)
+rec:Stop()
+rec:Replay(mockPlayer)
+```
+
+### Lifecycle
+```lua
+Mandy.Lifecycle({
+    OnBoot    = function() end,
+    OnReady   = function() end,
+    OnDestroy = function() end,
+})
+```
+
+---
+
+## Contract + Presence
+```lua
+Mandy.Contract({
+    Request  = "GetStats",
+    Response = "StatsResult",
+    Within   = 5,
+    OnBreach = function(player) end,
+})
+
+Mandy.Presence({
+    OnJoin      = function(player) end,
+    OnLeave     = function(player, reason) end,
+    OnReconnect = function(player) end,
+})
+
+Mandy.Heartbeat({
+    Interval = 5,
+    OnSilent = function(player) end,
+})
 ```
 
 ---
 
 ## Plugin System
-
-Authored as a plain table -- consumed via `Mandy.Plugin()`. The `mandy` reference in `OnLoad` is a full Mandy handle.
-
 ```lua
--- MyPlugin.lua
 return {
     Name    = "MyPlugin",
     Version = "1.0.0",
-
-    OnLoad = function(mandy)
-        mandy.Cross(function(packet, next)
-            next()
-        end)
-        mandy.Define("Plugin.Event", {
-            Type   = mandy.Lazy,
-            Parses = { At = mandy.float64() },
-        })
+    OnLoad  = function(mandy)
+        mandy.Cross(function(packet, next) next() end)
     end,
-
     OnDefine    = function(name, config) end,
     OnPost      = function(name, data) end,
     OnSubscribe = function(name, fn) end,
@@ -749,90 +738,52 @@ plugin:Unload()
 
 ---
 
-## Cleanup + Janitor
-
+## Stash -- Offline Delivery
 ```lua
--- Explicit
-Mandy.Remove("PlayerHit")      Mandy.Destroy()
-p:Destroy()                    bin:Destroy()
-stream:Destroy()               token:Destroy()
+Mandy.Stash(player, "RewardGranted", { Amount = 100 }, { Expires = 600 })
+```
+
+Queued server-side -- delivered on next join, ordered, with expiry.
+
+---
+
+## Cleanup + Janitor
+```lua
+Mandy.Remove("PlayerHit")   Mandy.Destroy()
+p:Destroy()   bin:Destroy()   stream:Destroy()   token:Destroy()
 plugin:Unload()
 sub:Disconnect() / sub.Disconnect() / sub()
 
--- Janitor
 local jan = Mandy.Janitor()
-
-jan:Add(Mandy.Packet("Hit", { ... }))
+jan:Add(Mandy.Mandate("Hit", { ... }))
 jan:Add(Mandy.Subscribe("PlayerHit", fn))
-jan:Add(Mandy.Token())
 jan:Add(function() end)
-
-jan:Bind(player.Character)    -- auto-cleans when instance destroyed
-jan:Remove(item)              -- untrack without destroying
+jan:Bind(player.Character)
+jan:Remove(item)
 jan:Cleanup()
 ```
 
 ---
 
 ## Dev Utilities
-
 ```lua
 Mandy.Version
 Mandy.Dev(true)
-Mandy.Assert("PlayerHit", data)       Mandy.Validate("PlayerHit", data)
+Mandy.Mock()                           -- isolated in-memory instance for testing
+Mandy.Assert("PlayerHit", data)
+Mandy.Validate("PlayerHit", data)
+Mandy.Pass(parsesOrName, data)
 Mandy.Simulate("PlayerHit", player, data)
-Mandy.Replay(snapshot)
-Mandy.Has("PlayerHit")                Mandy.Get("PlayerHit")
-Mandy.List()                          Mandy.ListBin("Combat")
+Mandy.Replay(imprint)
+Mandy.Has("PlayerHit")      Mandy.Get("PlayerHit")
+Mandy.List()                Mandy.ListBin("Combat")
 Mandy.Active("PlayerHit")
-Mandy.Pause("PlayerHit")              Mandy.Resume("PlayerHit")
-Mandy.Mute("PlayerHit")               Mandy.Unmute("PlayerHit")
-Mandy.Stats("PlayerHit")              Mandy.Stats()
-Mandy.Reset("PlayerHit")              Mandy.ResetAll()
+Mandy.Pause("PlayerHit")    Mandy.Resume("PlayerHit")
+Mandy.Mute("PlayerHit")     Mandy.Unmute("PlayerHit")
+Mandy.Stats("PlayerHit")    Mandy.Stats()
+Mandy.Reset("PlayerHit")    Mandy.ResetAll()
 Mandy.Extend(fn)
 ```
-
----
-
-## Api Reference
-
-| Function | Returns | Description |
-|----------|---------|-------------|
-| `Mandy.Define(name, config)` | `void` | Register a control globally |
-| `Mandy.Load(controls)` | `void` | Bulk define |
-| `Mandy.Packet(name, config)` | `PacketHandle` | Define + return handle |
-| `Mandy.Bin(name, config?)` | `Bin` | Named control registry |
-| `Mandy.Collective(name, config)` | `Collective` | Streaming channel |
-| `Mandy.Mirror(name, config)` | `Mirror` | Auto-replicating server state |
-| `Mandy.Sync(name, config)` | `Sync` | Bidirectional shared state |
-| `Mandy.Bridge(name, config)` | `Bridge` | Cross-server messaging |
-| `Mandy.Contract(config)` | `void` | Enforced request/response |
-| `Mandy.Presence(config)` | `void` | Player connection tracking |
-| `Mandy.Subscribe(name, fn)` | `Subscription` | Persistent listener |
-| `Mandy.Once(name, fn)` | `Subscription` | One-shot listener |
-| `Mandy.Await(name)` | `data` | Yield until next packet |
-| `Mandy.AwaitSafe(name)` | `ok, data, err` | Safe yield |
-| `Mandy.Expect(name)` | `data` | Yield -- errors on reject |
-| `Mandy.Post(name, playerOrData, data?)` | `Thenable?` | Send packet |
-| `Mandy.PostAll(name, data)` | `void` | Broadcast -- server only |
-| `Mandy.PostExclude(name, player, data)` | `void` | Broadcast except one |
-| `Mandy.Batch(fn)` | `void` | Flush multiple posts in one frame |
-| `Mandy.Validate(name, data)` | `boolean, string?` | Validate payload |
-| `Mandy.Token()` | `Token` | Cancellation token |
-| `Mandy.Janitor()` | `Janitor` | Batch cleanup |
-| `Mandy.Secure(config)` | `void` | Activate security layer |
-| `Mandy.Signed(fn)` | `void` | Fires when bootstrap completes |
-| `Mandy.Cross(fn)` | `void` | Add global middleware |
-| `Mandy.RateLimit(name, config)` | `void` | Per-control rate limit |
-| `Mandy.Flag(player, reason)` | `void` | Manual flag |
-| `Mandy.Unflag(player)` | `void` | Clear flags |
-| `Mandy.Flags(player)` | `FlagEntry[]` | Flag history |
-| `Mandy.Notice(config)` | `void` | Observability hooks |
-| `Mandy.Snapshot()` | `Snapshot` | Point-in-time dump |
-| `Mandy.Plugin(plugin)` | `PluginHandle` | Register plugin |
-| `Mandy.Extend(fn)` | `void` | Wrap core methods globally |
-| `Mandy.Remove(name)` | `void` | Unregister control |
-| `Mandy.Destroy()` | `void` | Tear down everything |
 
 ---
 
@@ -866,26 +817,27 @@ export type ControlConfig = {
     Parses    : { [string]: TypeDef } | typeof(Mandy.None),
     Modifiers : { any }?,
     Security  : { RateLimit: { MaxPerSecond: number?, MaxPerMinute: number? }?, Validate: boolean? }?,
+    Conform   : boolean?,
     Timeout   : number?,
     Retries   : number?,
     Delta     : boolean?,
 }
 
-export type Thenable = {
-    Next     : (fn: (package: any, resolve: (value: any) -> ()) -> ()) -> Thenable,
-    Toss     : (fn: (err: any, resolve: (value: any) -> ()) -> ()) -> Thenable,
-    Conclude : (fn: (original: any) -> ()) -> Thenable,
-    Retry    : (n: number) -> Thenable,
+export type Thread = {
+    Next     : (fn: (package: any, resolve: (value: any) -> ()) -> ()) -> Thread,
+    Toss     : (fn: (err: any, resolve: (value: any) -> ()) -> ()) -> Thread,
+    Conclude : (fn: (original: any) -> ()) -> Thread,
+    Retry    : (n: number) -> Thread,
     Collapse : (reason: string?) -> (),
 }
 
 export type Subscription = {
     Disconnect : () -> (),
     Data       : any?,
-    Next       : (fn: (package: any, resolve: (value: any) -> ()) -> ()) -> Thenable,
-    Toss       : (fn: (err: any, resolve: (value: any) -> ()) -> ()) -> Thenable,
-    Conclude   : (fn: (original: any) -> ()) -> Thenable,
-    Retry      : (n: number) -> Thenable,
+    Next       : (fn: (package: any, resolve: (value: any) -> ()) -> ()) -> Thread,
+    Toss       : (fn: (err: any, resolve: (value: any) -> ()) -> ()) -> Thread,
+    Conclude   : (fn: (original: any) -> ()) -> Thread,
+    Retry      : (n: number) -> Thread,
     Collapse   : (reason: string?) -> (),
 }
 
@@ -893,16 +845,16 @@ export type Token = {
     Cancelled : boolean,
     Reason    : string?,
     Cancel    : (reason: string?) -> (),
-    Next      : (fn: ((package: any, resolve: (value: any) -> ()) -> ())?) -> Thenable,
-    Toss      : (fn: (err: any, resolve: (value: any) -> ()) -> ()) -> Thenable,
-    Conclude  : (fn: (original: any) -> ()) -> Thenable,
+    Next      : (fn: ((package: any, resolve: (value: any) -> ()) -> ())?) -> Thread,
+    Toss      : (fn: (err: any, resolve: (value: any) -> ()) -> ()) -> Thread,
+    Conclude  : (fn: (original: any) -> ()) -> Thread,
     Collapse  : (reason: string?) -> (),
     Destroy   : () -> (),
 }
 
-export type PacketHandle = {
+export type Mandate = {
     Subscribe   : (fn: (player: Player?, package: any, resolve: ((any) -> ())?, drop: ((string?) -> ())?) -> ()) -> Subscription,
-    Post        : (playerOrData: any, data: any?) -> Thenable?,
+    Post        : (playerOrData: any, data: any?) -> Thread?,
     PostAll     : (data: any) -> (),
     PostExclude : (player: Player, data: any) -> (),
     Validate    : (data: any) -> (boolean, string?),
@@ -910,20 +862,21 @@ export type PacketHandle = {
 }
 
 export type Bin = {
-    Define      : (name: string, config: ControlConfig) -> (),
-    Subscribe   : (name: string, fn: (...any) -> ()) -> Subscription,
-    Post        : (name: string, playerOrData: any, data: any?) -> Thenable?,
-    PostAll     : (name: string, data: any) -> (),
-    PostExclude : (name: string, player: Player, data: any) -> (),
-    Has         : (name: string) -> boolean,
-    List        : () -> { string },
-    Stats       : (name: string) -> { [string]: number },
-    Pause       : (name: string) -> (),
-    Resume      : (name: string) -> (),
-    Mute        : (name: string) -> (),
-    Unmute      : (name: string) -> (),
-    Remove      : (name: string) -> (),
-    Destroy     : () -> (),
+    Define        : (name: string, config: ControlConfig) -> (),
+    CreateHandle  : (name: string) -> Mandate,
+    Subscribe     : (name: string, fn: (...any) -> ()) -> Subscription,
+    Post          : (name: string, playerOrData: any, data: any?) -> Thread?,
+    PostAll       : (name: string, data: any) -> (),
+    PostExclude   : (name: string, player: Player, data: any) -> (),
+    Has           : (name: string) -> boolean,
+    List          : () -> { string },
+    Stats         : (name: string) -> { [string]: number },
+    Pause         : (name: string) -> (),
+    Resume        : (name: string) -> (),
+    Mute          : (name: string) -> (),
+    Unmute        : (name: string) -> (),
+    Remove        : (name: string) -> (),
+    Destroy       : () -> (),
 }
 
 export type Janitor = {
@@ -937,7 +890,7 @@ export type PluginHandle = {
     Unload : () -> (),
 }
 
-export type FlagEntry = {
+export type Mark = {
     Reason : string,
     At     : number,
 }
