@@ -22,9 +22,10 @@
 ---
 
 ```
-  reliable -> [Unlazy]   RemoteEvent
-  unreliable -> [Lazy]     UnreliableRemoteEvent
-  request-response -> [Resolver] -> Thread | 
+reliable -> [Unlazy]   RemoteEvent
+unreliable -> [Lazy]     UnreliableRemoteEvent
+request-response -> [Resolver] -> Thread | 
+
 :Next(pkg, resolve)
 :Toss(error)
 :Conclude(original)
