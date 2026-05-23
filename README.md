@@ -25,11 +25,6 @@
 reliable -> [Unlazy]   RemoteEvent
 unreliable -> [Lazy]     UnreliableRemoteEvent
 [Resolver/Request-Response] -> Remote Function -> Thread:
-
-:Next(pkg, resolve)
-:Toss(error)
-:Conclude(original)
-:Collapse(reason?)
 ```
 
 ---
