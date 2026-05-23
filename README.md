@@ -24,13 +24,11 @@
 ```
   reliable -> [Unlazy]   RemoteEvent
   unreliable -> [Lazy]     UnreliableRemoteEvent
-  request-response -> [Resolver] -> Thread
-                                                  |
-                                          :Next(pkg, resolve)
-                                          :Toss(err, resolve)
-                                          :Conclude(original)
-                                          :Retry(n)
-                                          :Collapse(reason?)
+  request-response -> [Resolver] -> Thread | 
+:Next(pkg, resolve)
+:Toss(error)
+:Conclude(original)
+:Collapse(reason?)
 ```
 
 ---
