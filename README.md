@@ -22,9 +22,9 @@
 ---
 
 ```
-  reliable ---------------------> [Unlazy]   RemoteEvent
-  unreliable -------------------> [Lazy]     UnreliableRemoteEvent
-  request-response -------------> [Resolver] -> Thread
+  reliable -> [Unlazy]   RemoteEvent
+  unreliable -> [Lazy]     UnreliableRemoteEvent
+  request-response -> [Resolver] -> Thread
                                                   |
                                           :Next(pkg, resolve)
                                           :Toss(err, resolve)
@@ -39,24 +39,7 @@
 
 Mandy is a next-generation networking library for Roblox. It owns its full stack -- buffer serialization, type validation, async Thread chains, per-server signature security, bidirectional streaming, auto-replicating state, cross-server messaging, lag compensation, and a plugin system with full lifecycle hooks.
 
-All traffic is multiplexed through 8 remotes regardless of how many mandates are defined:
-
-```
-Runtime:
-  __Mandy_Lazy                UnreliableRemoteEvent
-  __Mandy_Unlazy              RemoteEvent
-  __Mandy_Resolver            RemoteFunction
-
-Diagnostic:
-  __Mandy_Lazy_Diagnostic     UnreliableRemoteEvent
-  __Mandy_Unlazy_Diagnostic   RemoteEvent
-  __Mandy_Resolver_Diagnostic RemoteFunction
-
-Infrastructure:
-  __Mandy_Bootstrap           RemoteEvent
-  __Mandy_Infra               RemoteEvent
-```
-
+All traffic is multiplexed through 8 remotes regardless of how many mandates are defined.
 Both sides define the same mandate. The rest is handled.
 
 ---
@@ -105,7 +88,7 @@ Mandy.string()    Mandy.number()    Mandy.bool()      Mandy.buff()
 Mandy.float32()   Mandy.float64()   Mandy.uint8()     Mandy.uint16()
 Mandy.uint32()    Mandy.int8()      Mandy.int16()     Mandy.int32()
 Mandy.any()       Mandy.never()     Mandy.unknown()   Mandy.nil_()
-Mandy.None        -- zero-payload -- use as Parses = Mandy.None
+Mandy.none        -- zero-payload -- use as Parses = Mandy.none
 ```
 
 ### Roblox Types
@@ -193,7 +176,7 @@ local Damage = Mandy.Mandate("Damage", {
 local Damage = Mandy.CreateHandle("Damage")
 
 -- Zero-payload
-Mandy.Define("Ping", { Type = Mandy.Unlazy, Parses = Mandy.None })
+Mandy.Define("Ping", { Type = Mandy.Unlazy, Parses = Mandy.none })
 
 -- Bulk
 Mandy.Load({
@@ -886,7 +869,7 @@ export type TypeDef = {
 
 export type MandateConfig = {
     Type      : typeof(Mandy.Unlazy) | typeof(Mandy.Lazy) | typeof(Mandy.Resolver),
-    Parses    : { [string]: TypeDef } | typeof(Mandy.None),
+    Parses    : { [string]: TypeDef } | typeof(Mandy.none),
     Modifiers : { any }?,
     Security  : { RateLimit: { MaxPerSecond: number?, MaxPerMinute: number? }?, Validate: boolean? }?,
     Conform   : boolean?,
