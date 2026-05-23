@@ -24,7 +24,7 @@
 ```
 reliable -> [Unlazy]   RemoteEvent
 unreliable -> [Lazy]     UnreliableRemoteEvent
-request-response -> [Resolver] -> Thread | 
+[Resolver/Request-Response] -> Remote Function -> Thread:
 
 :Next(pkg, resolve)
 :Toss(error)
