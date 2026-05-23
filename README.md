@@ -37,7 +37,25 @@
 
 ## What is Mandy
 
-Mandy is a next-generation networking library for Roblox. It owns its full stack -- buffer serialization, type validation, async Thread chains, per-server signature security, bidirectional streaming, auto-replicating state, cross-server messaging, and a plugin system with full lifecycle hooks.
+Mandy is a next-generation networking library for Roblox. It owns its full stack -- buffer serialization, type validation, async Thread chains, per-server signature security, bidirectional streaming, auto-replicating state, cross-server messaging, lag compensation, and a plugin system with full lifecycle hooks.
+
+All traffic is multiplexed through 8 remotes regardless of how many mandates are defined:
+
+```
+Runtime:
+  __Mandy_Lazy                UnreliableRemoteEvent
+  __Mandy_Unlazy              RemoteEvent
+  __Mandy_Resolver            RemoteFunction
+
+Diagnostic:
+  __Mandy_Lazy_Diagnostic     UnreliableRemoteEvent
+  __Mandy_Unlazy_Diagnostic   RemoteEvent
+  __Mandy_Resolver_Diagnostic RemoteFunction
+
+Infrastructure:
+  __Mandy_Bootstrap           RemoteEvent
+  __Mandy_Infra               RemoteEvent
+```
 
 Both sides define the same mandate. The rest is handled.
 
@@ -48,9 +66,8 @@ Both sides define the same mandate. The rest is handled.
 | Term | Meaning |
 |------|---------|
 | `Mandate` | a defined networking control -- what `Mandy.Mandate()` returns |
-| `Packet` | the raw definition config passed into `Define` or `Mandate` |
 | `Package` | the data sent over the wire |
-| `Parses` | the shape field inside a packet config |
+| `Parses` | the shape field inside a mandate config |
 | `Subscription` | a listener connection returned by `Subscribe` |
 | `Term` | any callback |
 | `Patch` | an intersection -- `:also()` |
@@ -66,24 +83,6 @@ Both sides define the same mandate. The rest is handled.
 
 ```lua
 local Mandy = require(game:GetService("ReplicatedStorage"):WaitForChild("Mandy"))
-```
-
----
-
-## File Structure
-
-```
-Mandy.lua
-├── _Mandy
-│   ├── Types.lua       type system + custom types
-│   ├── Truck.lua       buffer serialization + remote management
-│   ├── Security.lua    Secure + Signature + Cross + RateLimit + Marks
-│   ├── Async.lua       Promise + Thread + Token + Signal
-│   ├── Registry.lua    mandate registry + define + load
-│   ├── Janitor.lua     batch cleanup
-│   └── Shared.lua      constants + utilities
-└── _Libraries
-    └── Squash.lua      vendored buffer serialization
 ```
 
 ---
@@ -128,7 +127,7 @@ Mandy.map(Mandy.string(), Mandy.float32())
 Mandy.record(Mandy.string())
 Mandy.lazy(function() return Mandy.struct({ ... }) end)
 Mandy.shape({ ... })
-Mandy.partial(s)   Mandy.pick(s, { "Name" })
+Mandy.partial(s)              Mandy.pick(s, { "Name" })
 Mandy.omit(s, { "Health" })   Mandy.merge(sA, sB)
 ```
 
@@ -162,7 +161,7 @@ local UserId = Mandy.defineType({
     end,
 })
 
-UserId():bet(1, 999999)    -- all modifiers work
+UserId():bet(1, 999999)
 ```
 
 ---
@@ -182,7 +181,7 @@ Mandy.Define("PlayerHit", {
     },
 })
 
--- Mandate -- define + return handle
+-- Mandate handle
 local Damage = Mandy.Mandate("Damage", {
     Type    = Mandy.Resolver,
     Timeout = 5,
@@ -255,9 +254,9 @@ Combat.Post("Hit", player, { Damage = 25 })
 Combat.PostAll("Hit", { Damage = 25 })
 Combat.PostExclude("Hit", player, { Damage = 25 })
 
-Combat.Has("Hit")     Combat.List()       Combat.Stats("Hit")
-Combat.Pause("Hit")   Combat.Resume("Hit") Combat.Mute("Hit")
-Combat.Unmute("Hit")  Combat.Remove("Hit") Combat:Destroy()
+Combat.Has("Hit")      Combat.List()        Combat.Stats("Hit")
+Combat.Pause("Hit")    Combat.Resume("Hit") Combat.Mute("Hit")
+Combat.Unmute("Hit")   Combat.Remove("Hit") Combat:Destroy()
 ```
 
 ---
@@ -271,8 +270,8 @@ end)
 
 Mandy.Once("PlayerHit", function(player, package, resolve, drop) end)
 
-local data    = Mandy.Await("PlayerHit")
-local ok, data, err = Mandy.AwaitSafe("PlayerHit")
+local data           = Mandy.Await("PlayerHit")
+local ok, data, err  = Mandy.AwaitSafe("PlayerHit")
 ```
 
 ### Subscription Object
@@ -320,10 +319,18 @@ Mandy.Post("GetStats", { UserId = 123 })
     :Collapse(reason?)
 ```
 
+```
+:Next(fn)          on resolve -- fn(package, resolve) -- must call resolve to continue
+:Toss(fn)          on reject  -- fn(err, resolve)     -- call resolve to recover
+:Conclude(fn)      always fires -- receives original unmodified package
+:Retry(n)          retry up to n times on reject
+:Collapse(reason?) cancel thread + auto-resolve
+```
+
 ### Combinators
 ```lua
-Mandy.All({ t1, t2 })     Mandy.Race({ t1, t2 })    Mandy.Any({ t1, t2 })
-Mandy.Batch({ t1 }, n)    Mandy.Waterfall({ fn1 })  Mandy.Settle({ t1, t2 })
+Mandy.All({ t1, t2 })     Mandy.Race({ t1, t2 })   Mandy.Any({ t1, t2 })
+Mandy.Batch({ t1 }, n)    Mandy.Waterfall({ fn1 }) Mandy.Settle({ t1, t2 })
 ```
 
 ### Sync Utilities
@@ -373,6 +380,7 @@ end)
 
 -- Client
 Stream:Next(function(package, resolve, drop) resolve(result) end)
+    :Conclude(function(original) print("done") end)
 
 Stream:Pause()   Stream:Resume()
 Stream:Drop("reason")
@@ -392,7 +400,7 @@ local Health = Mandy.Mirror("PlayerHealth", {
     Parses = { Value = Mandy.uint8():bet(0, 100) },
 })
 
-Health.Set(player, { Value = 75 })  -- server
+Health.Set(player, { Value = 75 })   -- server
 Health.Get(player)
 Health.Subscribe(function(package, resolve, drop) end)  -- client
 Health.Get()
@@ -466,13 +474,19 @@ for _, mark in marks do print(mark.Reason, mark.At) end
 
 ### Advanced Security
 ```lua
-Mandy.Honeypot("FakePing")          -- any post auto-marks player
+Mandy.Honeypot("FakeMandate")       -- any post auto-marks player
 Mandy.Drift({ OnDetect = fn })      -- clock manipulation detection
 Mandy.Fingerprint({ OnFlag = fn })  -- behavioral anomaly detection
-Mandy.Shadow(player, fn)            -- duplicate packets to observer
-Mandy.Lockdown(player)              -- freeze packet processing
+Mandy.Shadow(player, fn)            -- duplicate packages to observer
+Mandy.Lockdown(player)              -- freeze mandate processing
 Mandy.Seal("PlayerHit")             -- lock mandate -- no further modifications
 Mandy.Surge(player, 5)              -- lift rate limits for n seconds
+
+Mandy.RateLimit("PlayerHit", { MaxPerSecond = 5, MaxPerMinute = 30 })
+Mandy.Mute("PlayerHit", player)
+Mandy.Disconnect(player)
+Mandy.Flush(player)
+Mandy.StatsFor(player)
 ```
 
 ---
@@ -488,123 +502,216 @@ end)
 
 ---
 
+## Latency + Network Compensation
+
+### Latency Measurement
+```lua
+Mandy.Echo(player)           -- round-trip ms
+Mandy.Echo()                 -- global average
+Mandy.Ping(player)           -- one-way estimated ms
+Mandy.Jitter(player)         -- variance ms
+Mandy.PingHistory(player, 10) -- last n samples
+Mandy.PingSmooth(player)     -- smoothed rolling average
+```
+
+### Connection Quality
+```lua
+local quality = Mandy.Quality(player)
+-- { Ping, Jitter, PacketLoss, Stability, Grade }
+-- Grade: "Excellent" "Good" "Fair" "Poor"
+
+Mandy.PacketLoss(player)     -- 0-1
+Mandy.Stability(player)      -- 0-1
+
+Mandy.OnDegrade(player, function(quality) end)
+Mandy.OnRecover(player, function(quality) end)
+```
+
+### Clock Synchronization
+```lua
+Mandy.ServerTime()           -- authoritative server timestamp
+Mandy.ClientTime(player)     -- estimated client clock
+Mandy.Offset(player)         -- clock offset in seconds
+Mandy.Sync.Clock()           -- force re-sync all clients
+```
+
+### Lag Compensation
+```lua
+local state = Mandy.Rewind(player, 0.1)
+-- { Position, Orientation, Velocity, At }
+
+local snapshot = Mandy.Rollback(player, timestamp)
+
+local window = Mandy.Window(player)
+-- { MaxSeconds, Recommended }
+
+local result = Mandy.Reconcile(player, clientPos, serverPos)
+-- { Corrected, Delta, Final }
+```
+
+### Query -- Spatial + Mathematical
+```lua
+-- Part-based
+Mandy.Query(player, timestamp, {
+    Method = "Part",
+    Target = target,
+})
+-- { Hit, Part, Position }
+
+-- Hitscan ray
+Mandy.Query(player, timestamp, {
+    Method    = "Ray",
+    Origin    = origin,
+    Direction = direction,
+    MaxDist   = 100,
+})
+-- { Hit, Position, Distance, Normal }
+
+-- Sphere overlap
+Mandy.Query(player, timestamp, {
+    Method = "Sphere",
+    Center = origin,
+    Radius = 5,
+})
+-- { Hit, Parts }
+
+-- Box overlap
+Mandy.Query(player, timestamp, {
+    Method = "Box",
+    CFrame = cf,
+    Size   = Vector3.new(4, 6, 4),
+})
+-- { Hit, Parts }
+
+-- Pure distance
+Mandy.Query(player, timestamp, {
+    Method  = "Distance",
+    Origin  = origin,
+    Target  = targetPos,
+    MaxDist = 10,
+})
+-- { Hit, Distance }
+```
+
+### Hit Validation
+```lua
+local result = Mandy.Validate.Hit(shooter, target, timestamp, origin, direction)
+-- { Valid, Distance, Position, Latency }
+
+local result = Mandy.Validate.Reach(player, target, maxDist, timestamp)
+-- { Valid, Distance, Delta }
+```
+
+### Prediction + Interpolation
+```lua
+Mandy.Interpolate(player, timestamp)   -- Vector3
+Mandy.Extrapolate(player, 0.1)         -- Vector3
+Mandy.Snapshots(player, 10)
+-- { { Position, Velocity, At }, ... }
+```
+
+### Adaptive Systems
+```lua
+Mandy.Adapt("PlayerPosition", player)  -- auto-switch Unlazy/Lazy by quality
+Mandy.TickRate(player)                 -- recommended send rate hz
+Mandy.Budget.Player(player)            -- { BytesPerSecond, Priority }
+```
+
+### Full Combat Example
+```lua
+-- Client
+local timestamp = Mandy.ServerTime()
+Mandy.Post("ShootEvent", {
+    Origin    = gun.Position,
+    Direction = direction,
+    At        = timestamp,
+})
+
+-- Server
+Mandy.Subscribe("ShootEvent", function(player, package, resolve, drop)
+    local window = Mandy.Window(player)
+
+    if Mandy.ServerTime() - package.At > window.MaxSeconds then
+        drop("stale timestamp")
+        return
+    end
+
+    local result = Mandy.Validate.Hit(
+        player, target, package.At, package.Origin, package.Direction
+    )
+
+    if not result.Valid then
+        Mandy.Flag(player, "invalid hit")
+        drop("hit validation failed")
+        return
+    end
+
+    applyDamage(target, 25)
+    resolve({ Ok = true, Position = result.Position })
+end)
+```
+
+---
+
 ## Advanced Features
 
-### Routing + Architecture
+### Routing
 ```lua
--- Synchronized multi-player post with shared timestamp
 Mandy.Chorus({ player1, player2 }, "RoundStart", { At = tick() })
-
--- Conditional routing -- drop + Term if false
 Mandy.When("PlayerHit", function(player, package)
     return player.Team ~= package.Target.Team
 end, function(player, package) end)
-
--- Spatial routing -- only players within radius receive
 Mandy.Region("ZoneEffect", workspace.Zone1, { Radius = 50 })
-
--- Team routing
 Mandy.Team("TeamAlert", redTeam, { Message = "Base under attack" })
-
--- Named alias -- both route to same mandate
 Mandy.Alias("PlayerHit", "DamagePlayer")
-
--- Chained mandate pipeline
 Mandy.Pipeline("CombatFlow", { "PlayerHit", "ApplyDamage", "BroadcastDeath" })
-
--- Time-limited post access
 Mandy.Lease(player, "PurchaseItem", { Expires = 10 })
-
--- Single-use server-issued ticket
 Mandy.Marker.Issue(player, "PurchaseItem", { Expires = 10 })
-
--- Transfer Collective ownership mid-stream
 Mandy.Handoff(stream, newPlayer)
-
--- Wait for packets from multiple players before firing
-Mandy.Converge({ "player1Ready", "player2Ready" }, function(packages) end)
-
--- Server-internal routing -- no network
+Mandy.Converge({ "p1Ready", "p2Ready" }, function(packages) end)
 Mandy.Dispatch("InternalEvent", data)
-
--- Phase-gated mandate groups
-Mandy.Phase("Combat", { "PlayerHit", "Damage", "StatusEffect" })
-Mandy.Enter("Combat")
-Mandy.Exit("Combat")
-
--- Tie mandate lifecycle to Instance
+Mandy.Phase("Combat", { "PlayerHit", "Damage" })
+Mandy.Enter("Combat")    Mandy.Exit("Combat")
 Mandy.Bind("ZoneChat", workspace.Zone1)
 ```
 
 ### State
 ```lua
--- Simple scalar server-owned value
 local Timer = Mandy.Anchor("RoundTimer", { Value = Mandy.float32() })
 Timer.Set(60)    Timer.Get()
 
--- Multi-server state agreement
-Mandy.Consensus("GlobalEconomy", {
-    Parses  = { Gold = Mandy.uint32() },
-    Quorum  = 3,
-})
+Mandy.Consensus("GlobalEconomy", { Parses = { Gold = Mandy.uint32() }, Quorum = 3 })
 
--- Imprint diff
-local delta = Mandy.Diff("PlayerState", oldPackage, newPackage)
+local delta = Mandy.Diff("PlayerState", pkgA, pkgB)
 -- { Health = { From = 100, To = 75 } }
 
--- Rollback player state to previous imprint
 Mandy.Rollback(player, imprint)
-
--- Logical clock per mandate
 Mandy.Epoch("PlayerHit")
 ```
 
 ### Cross-Server
 ```lua
--- Server cluster grouping
 Mandy.Cluster("GameServers", { Role = "Game" })
-
--- Player packet queue survives teleport
 Mandy.Migrate(player, targetJobId)
-
--- Server discovery
 Mandy.Postit({ Role = "Lobby", Capacity = 50 })
 local lobby = Mandy.Find({ Role = "Lobby" })
 ```
 
 ### Performance
 ```lua
--- Per-frame bandwidth budget with priority tiers
 Mandy.Budget({ Critical = 4096, High = 2048, Normal = 1024, Low = 512 })
-
--- Per-mandate send priority
 Mandy.Priority("PlayerHit", "Critical")
-
--- Pre-allocate buffer pools
 Mandy.Pool("PlayerPosition", { Size = 128 })
-
--- Auto-merge posts in same frame
 Mandy.Coalesce("PlayerPosition", true)
-
--- LZ compression for large payloads
 Mandy.Compress("MapData", true)
 ```
 
 ### Schema + Validation
 ```lua
--- Structural diff between two packages
-local delta = Mandy.Diff("PlayerState", pkgA, pkgB)
-
--- Validate inline shape -- no registered mandate needed
 local ok, err = Mandy.Pass({ Origin = Mandy.vec3() }, { Origin = Vector3.new() })
-
--- Validate against registered mandate
 local ok, err = Mandy.Validate("PlayerHit", package)
+local t       = Mandy.Infer({ Origin = Vector3.new(), Damage = 25 })
 
--- Infer TypeDef from raw value
-local t = Mandy.Infer({ Origin = Vector3.new(), Damage = 25 })
-
--- Versioned schema migration
 Mandy.Evolve("PlayerHit", {
     [1] = { Damage = Mandy.uint8() },
     [2] = { Damage = Mandy.uint8(), Origin = Mandy.vec3() },
@@ -613,47 +720,25 @@ Mandy.Evolve("PlayerHit", {
     },
 })
 
--- Coerce package to match Parses instead of rejecting
-Mandy.Define("PlayerHit", {
-    Type    = Mandy.Unlazy,
-    Conform = true,
-    Parses  = { Damage = Mandy.uint8():bet(0, 100):default(0) },
-})
-
--- Runtime type narrowing
-local value = Mandy.Narrow(package.Status, Mandy.string())
-
--- Export mandate type definition
+Mandy.Define("PlayerHit", { Type = Mandy.Unlazy, Conform = true, Parses = { Damage = Mandy.uint8():bet(0, 100):default(0) } })
+local value  = Mandy.Narrow(package.Status, Mandy.string())
 local schema = Mandy.Schema("PlayerHit")
-
--- Explain mandate in human-readable form
 Mandy.Explain("PlayerHit")
 ```
 
 ### Observability
 ```lua
--- Round-trip latency per mandate
-Mandy.Echo("PlayerHit")    -- returns ms
-Mandy.Echo()               -- global average
-
--- Predictive rate analysis
 Mandy.Forecast("PlayerHit", function(player, projection)
     print(projection.SecondsUntilLimit, projection.CurrentRate)
 end)
 
--- Active health check
 Mandy.Probe("PlayerHit", { Interval = 5 })
 
--- Per-mandate packet frequency heatmap
-local heatmap = Mandy.Heatmap()
+local heatmap  = Mandy.Heatmap()
+local timeline = Mandy.Timeline({ Mandate = "PlayerHit", Player = player })
 
--- Ordered event timeline
-local timeline = Mandy.Timeline({ Control = "PlayerHit", Player = player })
-
--- Immutable security audit log
 Mandy.Audit({ Persist = true, DataStore = "MandyAudit" })
 
--- Threshold alerts
 Mandy.Alert({
     Metric    = "DropRate",
     Mandate   = "PlayerHit",
@@ -661,7 +746,6 @@ Mandy.Alert({
     Term      = function(data) end,
 })
 
--- Notice hooks
 Mandy.Notice({
     Enabled  = true,
     OnPacket = function(event) print(event.Direction, event.Name, event.Size) end,
@@ -678,15 +762,6 @@ local imprint = Mandy.Snapshot()
 local rec = Mandy.Record(player)
 rec:Stop()
 rec:Replay(mockPlayer)
-```
-
-### Lifecycle
-```lua
-Mandy.Lifecycle({
-    OnBoot    = function() end,
-    OnReady   = function() end,
-    OnDestroy = function() end,
-})
 ```
 
 ---
@@ -706,10 +781,14 @@ Mandy.Presence({
     OnReconnect = function(player) end,
 })
 
-Mandy.Heartbeat({
-    Interval = 5,
-    OnSilent = function(player) end,
-})
+Mandy.Heartbeat({ Interval = 5, OnSilent = function(player) end })
+```
+
+---
+
+## Stash -- Offline Delivery
+```lua
+Mandy.Stash(player, "RewardGranted", { Amount = 100 }, { Expires = 600 })
 ```
 
 ---
@@ -721,6 +800,7 @@ return {
     Version = "1.0.0",
     OnLoad  = function(mandy)
         mandy.Cross(function(packet, next) next() end)
+        mandy.Define("Plugin.Event", { Type = mandy.Lazy, Parses = { At = mandy.float64() } })
     end,
     OnDefine    = function(name, config) end,
     OnPost      = function(name, data) end,
@@ -735,15 +815,6 @@ return {
 local plugin = Mandy.Plugin(require(ReplicatedStorage.MyPlugin))
 plugin:Unload()
 ```
-
----
-
-## Stash -- Offline Delivery
-```lua
-Mandy.Stash(player, "RewardGranted", { Amount = 100 }, { Expires = 600 })
-```
-
-Queued server-side -- delivered on next join, ordered, with expiry.
 
 ---
 
@@ -769,7 +840,7 @@ jan:Cleanup()
 ```lua
 Mandy.Version
 Mandy.Dev(true)
-Mandy.Mock()                           -- isolated in-memory instance for testing
+Mandy.Mock()
 Mandy.Assert("PlayerHit", data)
 Mandy.Validate("PlayerHit", data)
 Mandy.Pass(parsesOrName, data)
@@ -783,6 +854,7 @@ Mandy.Mute("PlayerHit")     Mandy.Unmute("PlayerHit")
 Mandy.Stats("PlayerHit")    Mandy.Stats()
 Mandy.Reset("PlayerHit")    Mandy.ResetAll()
 Mandy.Extend(fn)
+Mandy.Lifecycle({ OnBoot = fn, OnReady = fn, OnDestroy = fn })
 ```
 
 ---
@@ -812,7 +884,7 @@ export type TypeDef = {
     _describe   : string?,
 }
 
-export type ControlConfig = {
+export type MandateConfig = {
     Type      : typeof(Mandy.Unlazy) | typeof(Mandy.Lazy) | typeof(Mandy.Resolver),
     Parses    : { [string]: TypeDef } | typeof(Mandy.None),
     Modifiers : { any }?,
@@ -862,7 +934,7 @@ export type Mandate = {
 }
 
 export type Bin = {
-    Define        : (name: string, config: ControlConfig) -> (),
+    Define        : (name: string, config: MandateConfig) -> (),
     CreateHandle  : (name: string) -> Mandate,
     Subscribe     : (name: string, fn: (...any) -> ()) -> Subscription,
     Post          : (name: string, playerOrData: any, data: any?) -> Thread?,
@@ -893,6 +965,31 @@ export type PluginHandle = {
 export type Mark = {
     Reason : string,
     At     : number,
+}
+
+export type Quality = {
+    Ping       : number,
+    Jitter     : number,
+    PacketLoss : number,
+    Stability  : number,
+    Grade      : "Excellent" | "Good" | "Fair" | "Poor",
+}
+
+export type QueryResult = {
+    Hit      : boolean,
+    Position : Vector3?,
+    Distance : number?,
+    Normal   : Vector3?,
+    Parts    : { BasePart }?,
+    Part     : BasePart?,
+}
+
+export type ValidationResult = {
+    Valid    : boolean,
+    Distance : number?,
+    Position : Vector3?,
+    Latency  : number?,
+    Delta    : number?,
 }
 ```
 
