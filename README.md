@@ -24,7 +24,7 @@
 ```
 reliable -> [Unlazy]   RemoteEvent
 unreliable -> [Lazy]     UnreliableRemoteEvent
-[Resolver/Request-Response] -> Remote Function -> Thread:
+remote-function ->[Resolver] -> Thread
 ```
 
 ---
